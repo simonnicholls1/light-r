@@ -1,0 +1,51 @@
+#!/bin/bash
+
+# ASCII Art for 'LIGHT'
+LIGHT_ART="
+██╗     ██╗ ██████╗ ██╗  ██╗████████╗
+██║     ██║██╔════╝ ██║  ██║╚══██╔══╝
+██║     ██║██║  ███╗███████║   ██║   
+██║     ██║██║   ██║██╔══██║   ██║   
+███████╗██║╚██████╔╝██║  ██║   ██║   
+╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   
+"
+
+# Function to Display Help
+function display_help {
+    echo "$LIGHT_ART"
+    echo "LIGHT-R - Financial Data Processing Toolkit"
+    echo ""
+    echo "Usage: light-r <command> [arguments]"
+    echo ""
+    echo "Commands:"
+    echo "  after     Filter data after a specific date"
+    echo "  before    Filter data before a specific date"
+    echo "  cgrep     Filter specific columns"
+    echo "  signal    Generate signal based on data"
+    echo "  dlog      Calculate log returns"
+    echo "  unitscale Perform volatility scaling"
+    echo "  mult      Multiply two DataFrames"
+    echo "  load      Load data from a CSV file"
+    echo "  save      Save data to a CSV file"
+    echo "  ->        Save current DataFrame to a variable"
+    echo "  ffill     Forward fill missing values"
+    echo "  ewa       Calculate equally weighted average"
+    echo "  cumsum    Calculate cumulative sum"
+    echo "  shift     Shift data by a specified period"
+    echo "  plot      Generate a plot of the data"
+    echo "  momentum  Calculate momentum"
+    echo ""
+    echo "For more information on a specific command, type: light-r <command> --help"
+}
+
+# Check if at least one argument is provided
+if [ $# -eq 0 ] || [ "$1" = "--help" ]; then
+    display_help
+    exit 0
+fi
+
+# Join all arguments into a single string
+COMMAND_STRING="$*"
+
+# Pass the command string to the Rust binary
+./target/release/light-r "$COMMAND_STRING"

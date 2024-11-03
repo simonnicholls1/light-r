@@ -52,7 +52,7 @@ pub fn plot(df: &DataFrame) -> Result<(), Box<dyn Error>> {
 
     let ann_return = annualized_return(df);
     let ann_vol = annualized_volatility(df);
-    let sharpe = sharpe_ratio(df, ann_return, ann_vol);
+    let sharpe = sharpe_ratio(ann_return, ann_vol);
     let max_dd = max_drawdown(df);
 
     println!("Annualized Return: {:.2}%", ann_return * 100.0);
@@ -82,7 +82,7 @@ fn annualized_volatility(df: &DataFrame) -> f64 {
     (variance * 252.0).sqrt() / num_years.sqrt()
 }
 
-fn sharpe_ratio(df: &DataFrame, ann_return: f64, ann_vol: f64) -> f64 {
+fn sharpe_ratio(ann_return: f64, ann_vol: f64) -> f64 {
     if ann_vol == 0.0 {
         0.0
     } else {

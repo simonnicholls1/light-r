@@ -18,60 +18,53 @@ impl Engine {
     }
 
     pub fn execute_command(&mut self, command: &str, args: &[String]) -> Result<(), Box<dyn Error>> {
-        let df = self.current_df.as_mut().ok_or("No current DataFrame")?;
-
-        self.current_df = Some(match command {
-            "after" => after::main(df, &args[0])?,
-            "before" => before::main(df, &args[0])?,
-            "cgrep" => cgrep::main(df, args)?,
-            "signal" => signal::main(df)?,
-            "dlog" => dlog::main(df)?,
+        match command {
+            "after" => self.current_df = Some(after::main(self.current_df.as_ref().ok_or("No current DataFrame")?, &args[0])?),
+            "before" => self.current_df = Some(before::main(self.current_df.as_ref().ok_or("No current DataFrame")?, &args[0])?),
+            "cgrep" => self.current_df = Some(cgrep::main(self.current_df.as_ref().ok_or("No current DataFrame")?, args)?),
+            "signal" => self.current_df = Some(signal::main(self.current_df.as_ref().ok_or("No current DataFrame")?)?),
+            "dlog" => self.current_df = Some(dlog::main(self.current_df.as_ref().ok_or("No current DataFrame")?)?),
             "unitscale" => {
                 let window_size: usize = args[0].parse()?;
                 let target_vol: f64 = args[1].parse()?;
-                vol_scale::main(df, window_size, target_vol)?
+                self.current_df = Some(vol_scale::main(self.current_df.as_ref().ok_or("No current DataFrame")?, window_size, target_vol)?);
             },
             "mult" => {
                 let df2 = self.vars.get(&args[0]).ok_or("Variable not found")?;
-                multiply::main(df, df2)?
+                self.current_df = Some(multiply::main(self.current_df.as_ref().ok_or("No current DataFrame")?, df2)?);
             },
-            "load" => load::main(&args[0])?,
+            "load" => self.current_df = Some(self.load_csv(&args[0])?),
             "save" => {
-                save::main(df, &args[0])?;
-                df.clone()
+                save::main(self.current_df.as_ref().ok_or("No current DataFrame")?, &args[0])?;
             },
             "->" => {
-                self.vars.insert(args[0].clone(), df.clone());
-                df.clone()
+                self.vars.insert(args[0].clone(), self.current_df.clone().ok_or("No current DataFrame")?);
             },
-            "ffill" => ffill::main(df),
-            "ewa" => ewa::main(df)?,
+            "ffill" => self.current_df = Some(ffill::main(self.current_df.as_ref().ok_or("No current DataFrame")?)),
+            "ewa" => self.current_df = Some(ewa::main(self.current_df.as_ref().ok_or("No current DataFrame")?)?),
             "cumsum" => {
                 let start_number: f64 = args[0].parse()?;
-                cumsum::main(df, start_number)?
+                self.current_df = Some(cumsum::main(self.current_df.as_mut().ok_or("No current DataFrame")?, start_number)?);
             },
             "shift" => {
                 let period: i32 = args[0].parse()?;
-                shift::main(df, period)?
+                self.current_df = Some(shift::main(self.current_df.as_ref().ok_or("No current DataFrame")?, period)?);
             },
             "plot" => {
-                plot::main(df)?;
-                df.clone()
+                plot::main(self.current_df.as_ref().ok_or("No current DataFrame")?)?;
             },
             "momentum" => {
                 let lookback: usize = args[0].parse()?;
                 let frequency: usize = args[1].parse()?;
-                momentum::main(df, lookback, frequency)?
+                self.current_df = Some(momentum::main(self.current_df.as_ref().ok_or("No current DataFrame")?, lookback, frequency)?);
             },
             _ => return Err(format!("Unknown command: {}", command).into()),
-        });
-
+        }
+    
         Ok(())
     }
 
     pub fn process_commands(&mut self, command_string: &str) -> Result<(), Box<dyn Error>> {
-        self.initial_load()?;
-        
         for cmd in command_string.split('|') {
             let parts: Vec<String> = cmd.trim().split_whitespace().map(String::from).collect();
             if let Some((command, args)) = parts.split_first() {
@@ -86,8 +79,8 @@ impl Engine {
         Ok(())
     }
 
-    fn initial_load(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut rdr = csv::Reader::from_reader(std::io::stdin());
+    fn load_csv(&mut self, file_path: &str) -> Result<DataFrame, Box<dyn Error>> {
+        let mut rdr = csv::Reader::from_path(file_path)?;
         let headers = rdr.headers()?.clone();
         
         let mut dates = Vec::new();
@@ -106,9 +99,7 @@ impl Engine {
 
         let column_names: Vec<String> = headers.iter().skip(1).map(String::from).collect();
 
-        self.current_df = Some(DataFrame { dates, data, column_names });
-
-        Ok(())
+        Ok(DataFrame { dates, data, column_names })
     }
 
     fn output_csv(&self, df: &DataFrame) -> Result<(), Box<dyn Error>> {

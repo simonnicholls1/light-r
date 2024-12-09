@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug light-r with stdin",
+            "program": "${workspaceFolder}/target/debug/light-r",
+            "args": ["dlog"],
+            "cwd": "${workspaceFolder}",
+            "stdio": [
+                "./data/ALL_FUTURES.csv", // Redirects the file as stdin
+                null,
+                null
+            ],
+            "terminal": "integrated",
+            "sourceLanguages": ["rust"]
+        }
+    ]
+}

@@ -1,5 +1,5 @@
 use memmap2::{Mmap, MmapMut};
-use std::{error::Error, fs::File};
+use std::fs::File;
 use core::f64;
 use std::io::{self, Read};
 

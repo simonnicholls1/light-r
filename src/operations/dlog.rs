@@ -1,4 +1,4 @@
-use memmap2::{MmapMut};
+use memmap2::MmapMut;
 use crate::DataFrame;
 
 pub fn dlog(input_df: &DataFrame) -> Result<DataFrame, Box<dyn std::error::Error>> {
@@ -73,6 +73,6 @@ pub fn dlog(input_df: &DataFrame) -> Result<DataFrame, Box<dyn std::error::Error
         column_names,
         row_names,
         row_or_column: input_df.row_or_column.clone(),
-        offsets: input_df.offsets.clone(), // Preserve column offsets
+        offsets: input_df.offsets.clone(),
     })
 }

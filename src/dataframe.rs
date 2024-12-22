@@ -1,5 +1,5 @@
 use memmap2::{Mmap, MmapMut};
-use std::fs::File;
+use std::{fs::File};
 use core::f64;
 use std::io::{self, Read};
 
@@ -88,29 +88,29 @@ impl DataFrame {
     }
 
     /// Create a memory-mapped DataFrame from stdin
-    pub fn from_stdin() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_stdin(row_or_column: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let stdin = io::stdin();
         let mut buffer = String::new();
-
+    
         stdin.lock().read_to_string(&mut buffer)?;
         if buffer.trim().is_empty() {
             return Err("Error: No input provided via stdin.".into());
         }
-
+    
         let mut rdr = csv::Reader::from_reader(buffer.as_bytes());
         let headers = rdr.headers()?.clone();
-
+    
         let mut column_names: Vec<String> = headers.iter().map(String::from).collect();
         if column_names[0] != "DATE" {
             return Err("Error: First column must be 'DATE'.".into());
         }
         column_names.remove(0); // Remove the "DATE" column
-
+    
         let mut num_rows = 0;
         let num_columns = column_names.len();
         let mut row_names = Vec::new();
         let mut raw_data = Vec::new();
-
+    
         for result in rdr.records() {
             let record = result?;
             row_names.push(record[0].to_string()); // First column is the "DATE"
@@ -123,28 +123,103 @@ impl DataFrame {
             }));
             num_rows += 1;
         }
-
+    
         if raw_data.len() != num_rows * num_columns {
             return Err("Error: Mismatched row or column count.".into());
         }
-
+    
         let data_size = num_rows * num_columns * 8;
         let mut mmap_data = { MmapMut::map_anon(data_size)? };
-
-        mmap_data.copy_from_slice(&raw_data.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
-
-        let offsets = Self::calc_offsets(num_rows, num_columns);
-
+    
+        // Write data row by row for initial row-major mapping
+        for row_index in 0..num_rows {
+            for col_index in 0..num_columns {
+                let value = raw_data[row_index * num_columns + col_index];
+                let offset = (row_index * num_columns + col_index) * 8;
+                mmap_data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+    
+        // Remap to column-major order if requested
+        let mmap = if row_or_column == "column" {
+            Self::remap_to_column_major(&mmap_data, num_rows, num_columns)?
+        } else {
+            mmap_data
+        };
+    
+        // Calculate offsets based on row or column layout
+        let offsets = if row_or_column == "row" {
+            Self::calc_row_offsets(num_rows, num_columns)
+        } else {
+            Self::calc_column_offsets(num_rows, num_columns)
+        };
+    
         Ok(Self {
-            mmap: mmap_data.make_read_only()?,
+            mmap: mmap.make_read_only()?,
             num_rows,
             num_columns,
             column_names,
             row_names,
-            row_or_column: "column".to_string(),
-            offsets: offsets,
+            row_or_column: row_or_column.to_string(),
+            offsets,
         })
     }
+
+    /// Calculate row-major offsets
+    pub fn calc_row_offsets(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {
+        (0..num_rows)
+            .map(|row_index| {
+                (0..num_columns)
+                    .map(|col_index| (row_index * num_columns + col_index) * 8)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Calculate row-major offsets
+    pub fn calc_column_offsets(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {
+        (0..num_columns)
+            .map(|col_index| {
+                (0..num_rows)
+                    .map(|row_index| (row_index * 8) + (col_index * num_rows * 8))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Calculate column-major offsets
+    pub fn calc_column_offsets_old(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {
+        (0..num_columns)
+            .map(|col_index| {
+                (0..num_rows)
+                    .map(|row_index| (col_index * num_rows + row_index) * 8)
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn remap_to_column_major(
+        mmap: &MmapMut,
+        num_rows: usize,
+        num_columns: usize,
+    ) -> Result<MmapMut, Box<dyn std::error::Error>> {
+        let data_size = num_rows * num_columns * 8;
+        let mut column_major_data = vec![0u8; data_size];
+    
+        for col_index in 0..num_columns {
+            for row_index in 0..num_rows {
+                let row_major_offset = (row_index * num_columns + col_index) * 8;
+                let column_major_offset = (col_index * num_rows + row_index) * 8;
+                column_major_data[column_major_offset..column_major_offset + 8]
+                    .copy_from_slice(&mmap[row_major_offset..row_major_offset + 8]);
+            }
+        }
+    
+        let mut remapped_mmap = MmapMut::map_anon(data_size)?;
+        remapped_mmap.copy_from_slice(&column_major_data);
+    
+        Ok(remapped_mmap)
+    }    
 
     /// Calculate byte offsets for each data element in each row
     pub fn calc_offsets(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {

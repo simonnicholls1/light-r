@@ -87,7 +87,7 @@ impl Engine {
     }
     
     fn load_from_stdin(&self) -> Result<DataFrame, Box<dyn Error>> {
-        DataFrame::from_stdin()
+        DataFrame::from_stdin("column")
     }
 
 }

@@ -9,7 +9,7 @@
             "args": ["dlog"],
             "cwd": "${workspaceFolder}",
             "stdio": [
-                "./data/ALL_FUTURES.csv", // Redirects the file as stdin
+                "./data/TEST.csv", // Redirects the file as stdin
                 null,
                 null
             ],

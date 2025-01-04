@@ -1,6 +1,12 @@
 use std::error::Error;
+use std::time::Instant;
 use crate::dataframe::DataFrame;
-use crate::operations::dlog;
+use crate::operations::dlog::{self, dlog_block};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::sync::mpsc;
+use memmap2::MmapMut;
+use tempfile::tempfile;
 
 pub struct Engine {
 }
@@ -25,6 +31,17 @@ impl Engine {
                 return Ok(df)
             }
 
+            "dlog_multithread" => {
+                let input_df = df.ok_or("No current DataFrame to process for dlog")?;
+                let df = Engine::parallel_process(&input_df, Arc::new(dlog_block), 4)?;
+                return Ok(df)
+            }
+
+            "print" => {
+                let input_df = df.ok_or("No current DataFrame to process for dlog")?;
+                input_df.print();
+                return Ok(input_df)
+            }
             //"after" => self.current_df = Some(after::main(self.current_df.as_ref().ok_or("No current DataFrame")?, &args[0])?),
             //"before" => self.current_df = Some(before::main(self.current_df.as_ref().ok_or("No current DataFrame")?, &args[0])?),
             //"cgrep" => self.current_df = Some(cgrep::main(self.current_df.as_ref().ok_or("No current DataFrame")?, args)?),
@@ -69,6 +86,9 @@ impl Engine {
     }
 
     pub fn process_commands(&mut self, command_string: &str) -> Result<(), Box<dyn Error>> {
+        // Measure execution time
+        let start = Instant::now();
+
         // Step 1: Load initial DataFrame from stdin
         let mut current_df = self.load_from_stdin()?;
 
@@ -79,9 +99,17 @@ impl Engine {
                 current_df = self.execute_command(command, args, Some(current_df))?;
             }
         }
+
+        let duration = start.elapsed();
     
         // Step 3: Output the final DataFrame to stdout
-        current_df.print();
+        if current_df.num_rows < 300000
+        {current_df.print();}
+        else {println!("Skipping printing as above 200k rows")}
+
+        println!("Time taken to calc: {:?}", duration);
+        println!("No rows: {:?}", current_df.num_rows);
+        println!("No Assets: {:?}", current_df.num_columns);
     
         Ok(())
     }
@@ -90,4 +118,83 @@ impl Engine {
         DataFrame::from_stdin("column")
     }
 
+   
+    pub fn parallel_process<F>(
+        input_df: &DataFrame,
+        operation: Arc<F>,
+        max_threads: usize,
+    ) -> Result<DataFrame, Box<dyn Error>>
+    where
+        F: Fn(&[u8], &mut [u8], &[usize]) + Send + Sync + 'static,
+    {
+        let num_blocks = input_df.offsets.len();
+    
+        // Create an output memory map
+        let output_size = input_df.num_rows * input_df.num_columns * 8;
+        let tmpfile = tempfile()?;
+        tmpfile.set_len(output_size as u64)?;
+        let output_mmap = unsafe { MmapMut::map_mut(&tmpfile)? };
+        let output_mmap = Arc::new(Mutex::new(output_mmap));
+    
+        // Share input memory map
+        let input_mmap = Arc::new(input_df.mmap.clone());
+    
+        // Create a channel to distribute work
+        let (tx, rx) = mpsc::channel();
+    
+        // Send all blocks of offsets to the channel
+        for block_offsets in &input_df.offsets {
+            tx.send(block_offsets.clone()).unwrap();
+        }
+        drop(tx); // Close the sender to signal no more work
+    
+        // Wrap the receiver in Arc<Mutex> to share among threads
+        let rx = Arc::new(Mutex::new(rx));
+    
+        // Worker pool
+        let mut handles = vec![];
+        for _ in 0..max_threads.min(num_blocks) {
+            let input_mmap = Arc::clone(&input_mmap);
+            let output_mmap = Arc::clone(&output_mmap);
+            let rx = Arc::clone(&rx);
+            let operation = Arc::clone(&operation);
+    
+            let handle = thread::spawn(move || {
+                while let Ok(block_offsets) = rx.lock().unwrap().recv() {
+                    let mut output_lock = output_mmap.lock().unwrap();
+    
+                    // Pass the block of offsets to the operation
+                    operation(
+                        &input_mmap[..],                  // Entire input mmap
+                        &mut output_lock[..],             // Entire output mmap
+                        &block_offsets[..],               // Current block of offsets
+                    );
+                }
+            });
+    
+            handles.push(handle);
+        }
+    
+        // Wait for all threads to finish
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    
+        // Unwrap the output memory map
+        let output_mmap = Arc::try_unwrap(output_mmap)
+            .expect("Failed to unwrap Arc")
+            .into_inner()
+            .expect("Failed to lock Mutex");
+    
+        Ok(DataFrame {
+            mmap: Arc::new(output_mmap.make_read_only()?),
+            num_rows: input_df.num_rows,
+            num_columns: input_df.num_columns,
+            column_names: input_df.column_names.clone(),
+            row_names: input_df.row_names.clone(),
+            row_or_column: input_df.row_or_column.clone(),
+            offsets: input_df.offsets.clone(),
+        })
+    }
+    
 }

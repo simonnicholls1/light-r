@@ -1,17 +1,17 @@
 use memmap2::{Mmap, MmapMut};
-use std::{fs::File, io};
+use std::{fs::File, io, sync::Arc};
 use core::f64;
 use tempfile::tempfile;
 use std::io::Read;
 
 pub struct DataFrame {
-    pub mmap: Mmap,                     // Memory-mapped file
+    pub mmap: Arc<Mmap>,                     // Memory-mapped file
     pub num_rows: usize,                // Number of rows in the dataset
     pub num_columns: usize,             // Number of columns in the dataset
     pub column_names: Vec<String>,      // Names of the columns
     pub row_names: Vec<String>,         // Names of the rows (e.g., dates)
     pub row_or_column: String,          // Either "row" or "column"
-    pub offsets: Vec<Vec<usize>>, // Byte offsets for column-wise access
+    pub offsets: Vec<Vec<usize>>,       // Byte offsets for column-wise access
 }
 
 impl DataFrame {
@@ -77,7 +77,7 @@ impl DataFrame {
         let offsets = Self::calc_offsets(num_rows, num_columns);
 
         Ok(Self {
-            mmap: mmap_data.make_read_only()?,
+            mmap: Arc::new(mmap_data.make_read_only()?),
             num_rows,
             num_columns,
             column_names,
@@ -158,7 +158,7 @@ impl DataFrame {
         };
 
         Ok(Self {
-            mmap: remapped_mmap.make_read_only()?,
+            mmap: Arc::new(remapped_mmap.make_read_only()?),
             num_rows,
             num_columns,
             column_names,

@@ -31,8 +31,7 @@ pub fn dlog(input_df: &DataFrame) -> Result<DataFrame, Box<dyn std::error::Error
             };
 
             //let output_offset = row_index * num_columns * 8 + col_index * 8;
-            let output_offset = block_idx * num_columns * 8 + block_no * 8;
-            mmap_out[output_offset..output_offset + 8].copy_from_slice(&log_return.to_le_bytes());
+            mmap_out[curr_offset..curr_offset + 8].copy_from_slice(&log_return.to_le_bytes());
         }
 
         // Fill first column with NaN (no previous value for log return)

@@ -1,7 +1,8 @@
 use memmap2::{Mmap, MmapMut};
-use std::{fs::File};
+use std::{fs::File, io};
 use core::f64;
-use std::io::{self, Read};
+use tempfile::tempfile;
+use std::io::Read;
 
 pub struct DataFrame {
     pub mmap: Mmap,                     // Memory-mapped file
@@ -59,7 +60,6 @@ impl DataFrame {
                         }
                     }));
                 }
-
                 num_rows += 1;
                 line_start = i + 1;
             }
@@ -87,75 +87,78 @@ impl DataFrame {
         })
     }
 
-    /// Create a memory-mapped DataFrame from stdin
-    pub fn from_stdin(row_or_column: &str) -> Result<Self, Box<dyn std::error::Error>> {
+     /// Create a memory-mapped DataFrame from stdin
+     pub fn from_stdin(row_or_column: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let stdin = io::stdin();
         let mut buffer = String::new();
-    
+
         stdin.lock().read_to_string(&mut buffer)?;
         if buffer.trim().is_empty() {
             return Err("Error: No input provided via stdin.".into());
         }
-    
+
+        // Parse headers
         let mut rdr = csv::Reader::from_reader(buffer.as_bytes());
         let headers = rdr.headers()?.clone();
-    
         let mut column_names: Vec<String> = headers.iter().map(String::from).collect();
         if column_names[0] != "DATE" {
             return Err("Error: First column must be 'DATE'.".into());
         }
-        column_names.remove(0); // Remove the "DATE" column
-    
-        let mut num_rows = 0;
+        column_names.remove(0); // Remove "DATE" column
+
         let num_columns = column_names.len();
         let mut row_names = Vec::new();
-        let mut raw_data = Vec::new();
-    
+        let mut num_rows = 0;
+
+        // First pass to count rows
         for result in rdr.records() {
             let record = result?;
-            row_names.push(record[0].to_string()); // First column is the "DATE"
-            raw_data.extend(record.iter().skip(1).map(|x| {
-                if x.trim().is_empty() {
-                    f64::NAN
-                } else {
-                    x.parse::<f64>().unwrap_or(f64::NAN)
-                }
-            }));
+            row_names.push(record[0].to_string()); // Store the date
             num_rows += 1;
         }
-    
-        if raw_data.len() != num_rows * num_columns {
-            return Err("Error: Mismatched row or column count.".into());
-        }
-    
-        let data_size = num_rows * num_columns * 8;
-        let mut mmap_data = { MmapMut::map_anon(data_size)? };
-    
-        // Write data row by row for initial row-major mapping
-        for row_index in 0..num_rows {
-            for col_index in 0..num_columns {
-                let value = raw_data[row_index * num_columns + col_index];
+
+        // Calculate the required file size
+        let file_size = num_rows * num_columns * 8;
+
+        // Create a temporary file
+        let tmpfile = tempfile()?;
+        tmpfile.set_len(file_size as u64)?; // Set the file size
+
+        // Memory-map the file
+        let mut mmap = unsafe { MmapMut::map_mut(&tmpfile)? };
+
+        // Second pass to write data directly to memory map
+        rdr = csv::Reader::from_reader(buffer.as_bytes());
+        for (row_index, result) in rdr.records().enumerate() {
+            let record = result?;
+            for (col_index, value) in record.iter().skip(1).enumerate() {
+                let parsed_value = if value.trim().is_empty() {
+                    f64::NAN
+                } else {
+                    value.parse::<f64>().unwrap_or(f64::NAN)
+                };
+
                 let offset = (row_index * num_columns + col_index) * 8;
-                mmap_data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+                mmap[offset..offset + 8].copy_from_slice(&parsed_value.to_le_bytes());
             }
         }
-    
-        // Remap to column-major order if requested
-        let mmap = if row_or_column == "column" {
-            Self::remap_to_column_major(&mmap_data, num_rows, num_columns)?
+
+        // Remap to column-major order if needed
+        let remapped_mmap = if row_or_column == "column" {
+            Self::remap_to_column_major(&mmap, num_rows, num_columns)?
         } else {
-            mmap_data
+            mmap
         };
-    
-        // Calculate offsets based on row or column layout
+
+        // Calculate offsets
         let offsets = if row_or_column == "row" {
             Self::calc_row_offsets(num_rows, num_columns)
         } else {
             Self::calc_column_offsets(num_rows, num_columns)
         };
-    
+
         Ok(Self {
-            mmap: mmap.make_read_only()?,
+            mmap: remapped_mmap.make_read_only()?,
             num_rows,
             num_columns,
             column_names,
@@ -176,23 +179,12 @@ impl DataFrame {
             .collect()
     }
 
-    /// Calculate row-major offsets
+    /// Calculate col-major offsets
     pub fn calc_column_offsets(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {
         (0..num_columns)
             .map(|col_index| {
                 (0..num_rows)
                     .map(|row_index| (row_index * 8) + (col_index * num_rows * 8))
-                    .collect()
-            })
-            .collect()
-    }
-
-    /// Calculate column-major offsets
-    pub fn calc_column_offsets_old(num_rows: usize, num_columns: usize) -> Vec<Vec<usize>> {
-        (0..num_columns)
-            .map(|col_index| {
-                (0..num_rows)
-                    .map(|row_index| (col_index * num_rows + row_index) * 8)
                     .collect()
             })
             .collect()
@@ -241,7 +233,7 @@ impl DataFrame {
     pub fn print(&self) {
         let mut wtr = csv::Writer::from_writer(std::io::stdout());
     
-        // Write the header row directly
+        // Write the header row
         let mut header = self.column_names.clone();
         header.insert(0, "DATE".to_string());
         if let Err(err) = wtr.write_record(&header) {
@@ -249,30 +241,46 @@ impl DataFrame {
             return;
         }
     
-        // Write each row directly
-        for row_index in 0..self.num_rows {
-            // Start with the date from `row_names`
-            let mut record = vec![self.row_names[row_index].clone()];
+        if self.row_or_column == "row" {
+            // Process row-major format
+            for row_index in 0..self.num_rows {
+                let mut record = vec![self.row_names[row_index].clone()];
+                record.extend((0..self.num_columns).map(|col_index| {
+                    let offset = self.offsets[row_index][col_index];
+                    let bytes = &self.mmap[offset..offset + 8];
+                    let value = f64::from_le_bytes(bytes.try_into().unwrap_or_default());
+                    value.to_string()
+                }));
     
-            // Add the numeric data directly
-            record.extend((0..self.num_columns).map(|col_index| {
-                let offset = self.offsets[row_index][col_index];
-                let bytes = &self.mmap[offset..offset + 8];
-                let value = f64::from_le_bytes(bytes.try_into().unwrap_or_default());
-                value.to_string()
-            }));
-    
-            // Write the record directly to the CSV writer
-            if let Err(err) = wtr.write_record(&record) {
-                eprintln!("Error writing record for row {}: {}", row_index, err);
-                return;
+                if let Err(err) = wtr.write_record(&record) {
+                    eprintln!("Error writing record for row {}: {}", row_index, err);
+                    return;
+                }
             }
+        } else if self.row_or_column == "column" {
+            // Process column-major format
+            for row_index in 0..self.num_rows {
+                let mut record = vec![self.row_names[row_index].clone()];
+                record.extend((0..self.num_columns).map(|col_index| {
+                    let offset = self.offsets[col_index][row_index];
+                    let bytes = &self.mmap[offset..offset + 8];
+                    let value = f64::from_le_bytes(bytes.try_into().unwrap_or_default());
+                    value.to_string()
+                }));
+    
+                if let Err(err) = wtr.write_record(&record) {
+                    eprintln!("Error writing record for row {}: {}", row_index, err);
+                    return;
+                }
+            }
+        } else {
+            eprintln!("Error: Unknown row_or_column format.");
+            return;
         }
     
         if let Err(err) = wtr.flush() {
             eprintln!("Error flushing CSV writer: {}", err);
         }
     }
-
 
 }
